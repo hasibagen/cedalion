@@ -11,3 +11,4 @@ from .anatomy import read_segmentation_masks, read_parcellations, read_parcel_co
 from .photogrammetry import read_photogrammetry_einstar, read_einstar, opt_fid_to_xr
 from .forward_model import save_Adot, load_Adot
 from .bids import read_events_from_tsv
+from .yiruide import read_yiruide, detect_version
