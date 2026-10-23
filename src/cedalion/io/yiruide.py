@@ -236,65 +236,6 @@ def parse_pos(path: Union[str, Path]) -> Probe:
     return pr
 
 
-_POS_CACHE: dict[str, list[Probe]] = {}
-
-
-def discover_pos(pos_dir: Union[str, Path]) -> list[Probe]:
-    """递归扫描 pos 目录，收集全部 zlhk pos 文件（重复内容去重）。
-
-    结果按目录缓存：批量/多进程模式下每个 worker 只扫描一次。
-    """
-    pos_dir = Path(pos_dir)
-    cache_key = str(pos_dir)
-    if cache_key in _POS_CACHE:
-        return _POS_CACHE[cache_key]
-    probes, seen = [], set()
-    for p in sorted(pos_dir.rglob("*.csv")):
-        try:
-            head = "\n".join(read_text_lines(p)[:6])
-        except ValueError:
-            continue
-        if "通道,X,Y,Z" not in head and "原始CSV文件mode名" not in head:
-            continue
-        try:
-            pr = parse_pos(p)
-        except ValueError as e:
-            LOG.debug("跳过无效 pos 文件 %s: %s", p, e)
-            continue
-        sig = (tuple(map(tuple, pr.src_pos)), tuple(map(tuple, pr.det_pos)),
-               tuple(sorted(pr.ch_map.items())))
-        if sig in seen:
-            continue
-        seen.add(sig)
-        probes.append(pr)
-    _POS_CACHE[cache_key] = probes
-    return probes
-
-
-def match_probe(rc: RawCsv, probes: list[Probe], explicit: Path | None) -> Probe:
-    """按显式指定 > Mode 名匹配 > 通道数唯一匹配 选择 pos 文件。"""
-    if explicit is not None:
-        return parse_pos(Path(explicit))
-    n_ch = len({ch for _, ch, _ in rc.ch_cols})
-    cands = [p for p in probes if len(p.ch_map) == n_ch]
-    if not cands:
-        raise LookupError(
-            f"通道数 {n_ch} 在 pos 目录中无匹配（可选: {sorted({len(p.ch_map) for p in probes})}），"
-            f"请显式指定光极文件"
-        )
-    if len(cands) > 1:
-        mode = rc.meta.get("Mode", "").replace(" ", "").lower()
-        by_mode = [p for p in cands if (p.mode_name or "").strip().lower() == mode]
-        if len(by_mode) == 1:
-            return by_mode[0]
-        raise LookupError(
-            f"通道数 {n_ch} 匹配到多个 pos 文件: "
-            + "; ".join(str(p.path) for p in cands)
-            + "，请显式指定"
-        )
-    return cands[0]
-
-
 # --------------------------------------------------------------------------- #
 # 数据整理：事件、meta、0 值修复
 # --------------------------------------------------------------------------- #
@@ -570,20 +511,19 @@ def build_recording(rc: RawCsv, probe: Probe):
 
 def read_yiruide(
     csv_path: Union[str, Path],
-    pos_path: Union[str, Path, None] = None,
-    pos_dir: Union[str, Path, None] = None,
+    pos_path: Union[str, Path],
     fix_zeros: bool = False,
 ) -> cdc.Recording:
     """Read a Yiruide zlhk CSV export into a :class:`Recording`.
 
+    The pos file must be passed explicitly: several cap generations can
+    share the same channel count (e.g. the 49-ch 1st/2nd generation), so
+    automatic matching is deliberately not offered.
+
     Args:
         csv_path: path to the device-exported CSV file (GBK, headerless
             data rows)
-        pos_path: path to the pos CSV with optode coordinates. Takes
-            precedence over ``pos_dir``.
-        pos_dir: root directory searched recursively for pos files when
-            ``pos_path`` is not given; matched by Mode name then unique
-            channel count. One of the two must be provided.
+        pos_path: path to the pos CSV with optode coordinates
         fix_zeros: apply the MATLAB csv2nirs zero repair (first zero →
             nearest non-zero, later zeros → previous sample). Default off.
 
@@ -595,13 +535,8 @@ def read_yiruide(
         from the Mark column; geo3d points from the pos file; and vendor
         metadata tags (Chinese values preserved).
     """
-    if pos_path is None and pos_dir is None:
-        raise ValueError("pos_path 或 pos_dir 必须给一个：无法确定光极排布")
     rc = parse_csv(csv_path)
-    if pos_path is not None:
-        probe = parse_pos(pos_path)
-    else:
-        probe = match_probe(rc, discover_pos(pos_dir), None)
+    probe = parse_pos(pos_path)
     if fix_zeros:
         wavelengths, ch_nums, col_of = _resolve_columns(rc)
         order = [(wi, ch) for wi in range(len(wavelengths)) for ch in ch_nums]

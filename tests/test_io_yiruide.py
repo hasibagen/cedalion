@@ -62,9 +62,10 @@ def test_detect_version():
     assert cedalion.io.detect_version is yiruide.detect_version
 
 
-def test_read_yiruide_requires_pos():
-    with pytest.raises(ValueError):
-        yiruide.read_yiruide("whatever.csv")  # pos_path 与 pos_dir 都未给
+def test_read_yiruide_requires_explicit_pos():
+    # pos_path 必传，无自动匹配（多代帽子同通道数，自动匹配不可靠）
+    with pytest.raises(TypeError):
+        yiruide.read_yiruide("whatever.csv")
 
 
 @requires_data
